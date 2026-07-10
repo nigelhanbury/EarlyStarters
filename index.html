@@ -899,6 +899,55 @@ canvas {
 }
 .doodle-resize-grip:hover { opacity: 1; }
 
+/* ===== CIRCUIT ANNOTATE overlay (ported from capacitor toolkit) ===== */
+/* The stage is itself a column flex container, so the circuit canvas inside it
+   is a stretched flex child - the identical layout mechanism it had when it sat
+   directly in .canvas-column. Displayed size is therefore unchanged from the
+   original app. The overlay is absolutely positioned over the same box, so ink
+   registration is preserved (both canvases share buffer size and display box). */
+.circuit-stage { position: relative; display: flex; flex-direction: column; }
+.circuit-annotate-canvas {
+    position: absolute;
+    left: 0; top: 0;
+    width: 100%; height: 100%;
+    border-radius: 15px;
+    background: transparent !important;   /* override global canvas gradient so circuit shows through */
+    border: none !important;
+    box-shadow: none !important;
+    pointer-events: none;           /* transparent to input until annotate mode is on */
+    touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.circuit-annotate-canvas.active { pointer-events: auto; }
+.circuit-stage.annotating canvas#canvas { box-shadow: inset 0 0 0 3px rgba(79,195,247,0.8), inset 0 0 50px rgba(0,0,0,0.5), 0 0 30px rgba(255,150,50,0.2); }
+.circuit-annotate-bar {
+    position: absolute;
+    left: 10px; top: 10px;
+    z-index: 5;                     /* above both canvases so the toolbar is always usable */
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    max-width: calc(100% - 20px);
+    background: rgba(15,18,30,0.88);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px;
+    padding: 6px 10px;
+}
+.graphs-annotate-toggle {
+    background: rgba(255,255,255,0.08);
+    color: #cdd6e6;
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.85em;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    touch-action: manipulation;
+}
+.graphs-annotate-toggle.active { background: #4fc3f7; color: #10131c; border-color: #4fc3f7; }
+
 </style>
 </head>
 <body>
@@ -908,7 +957,22 @@ canvas {
     
     <div class="main-area">
         <div class="canvas-column">
-            <canvas id="canvas" width="900" height="650"></canvas>
+            <div class="circuit-stage" id="circuitStage">
+                <canvas id="canvas" width="900" height="650"></canvas>
+                <canvas id="circuitAnnotateCanvas" width="900" height="650" class="circuit-annotate-canvas"></canvas>
+                <div class="circuit-annotate-bar" id="circuitAnnotateBar">
+                    <button class="graphs-annotate-toggle" id="caToggle" onclick="CircuitAnnotate.toggle()" title="Draw on the circuit">&#9999;&#65039; Annotate</button>
+                    <span class="doodle-tools" id="caToolsExpanded" style="display:none;">
+                        <button class="doodle-swatch" data-cacolor="#ffffff" style="background:#ffffff" title="White"></button>
+                        <button class="doodle-swatch" data-cacolor="#e74c3c" style="background:#e74c3c" title="Red"></button>
+                        <button class="doodle-swatch" data-cacolor="#2ecc71" style="background:#2ecc71" title="Green"></button>
+                        <button class="doodle-swatch" data-cacolor="#ffd166" style="background:#ffd166" title="Yellow"></button>
+                        <button class="doodle-tool doodle-tool-icon" id="caEraser" title="Eraser" aria-label="Eraser"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="pointer-events:none"><g transform="rotate(-40 12 12)"><rect x="4" y="8" width="16" height="9" rx="1.8" fill="#ff8fab" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="12.5" width="16" height="4.5" fill="#dce3ee" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="8" width="16" height="9" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.5"/></g></svg></button>
+                        <span class="doodle-pensize"><label for="caThickness">Pen size</label><input type="range" id="caThickness" class="doodle-thick" min="0.5" max="4" step="0.1" value="2" title="Pen size"></span>
+                        <button class="doodle-tool" id="caClear" title="Clear annotations">Clear</button>
+                    </span>
+                </div>
+            </div>
             <div class="display-options">
                 <div class="opt-group">
                     <div class="opt-group-label">Canvas</div>
@@ -1022,7 +1086,7 @@ canvas {
         
         <div class="controls">
             <button id="helpBtn" class="help-btn" onclick="toggleHelp()">? Help</button>
-            <button id="doodleBtn" class="help-btn" onclick="DoodlePad.toggle()" title="Open a scribble pad to write or sketch with a stylus" style="margin-left:8px;">&#9999;&#65039; Scribble</button>
+            <button id="doodleBtn" class="help-btn" onclick="DoodlePad.toggle()" title="Open a scribble pad to write or sketch with a stylus" style="margin-left:8px;">&#9999;&#65039; Scribble Pad</button>
             <div class="panel">
                 <h3>Components</h3>
                 <div class="components-grid">
@@ -2878,6 +2942,7 @@ function findWireSnapTarget(x, y, excludeItem) {
   for (const item of state.items) {
     if (item === excludeItem) continue;
     if (item.type === 'voltmeter') continue;
+    if (item.type === 'potprobe') continue;
 
     // First check endpoints
     let dist = Math.hypot(x - item.x1, y - item.y1);
@@ -6642,6 +6707,7 @@ function simulateCircuit() {
   const endpoints = [];
   for (const item of state.items) {
     if (item.type === 'voltmeter') continue; // Voltmeter probes are sensors, not circuit nodes
+    if (item.type === 'potprobe') continue;  // Potential probe is a sensor too - no circuit nodes
     endpoints.push({ x: item.x1, y: item.y1, item, endNum: 1 });
     endpoints.push({ x: item.x2, y: item.y2, item, endNum: 2 });
     // Potentiometer has a third terminal
@@ -7124,6 +7190,7 @@ function simulateCircuit() {
     // Check if touching any wire segment (not just endpoints)
     for (const item of items) {
       if (item.type === 'voltmeter') continue; // Skip voltmeters
+      if (item.type === 'potprobe') continue; // Skip potential probes (sensors)
 
       // Special handling for rheostat - check all three wire segments
       if (item.type === 'rheostat') {
@@ -7451,6 +7518,7 @@ function findIVComponents() {
     // Then check along wire/component segments (same nodes as their endpoints)
     for (const item of state.items) {
       if (item.type === 'voltmeter') continue;
+      if (item.type === 'potprobe') continue;
       const dist = ptSegDist(px, py, item.x1, item.y1, item.x2, item.y2);
       if (dist < PROBE_DIST) {
         if (item.type === 'wire' || item.type === 'ammeter' || item.type === 'switch' && item.isOn || item.type === 'fuse' && !item.fuseBlown) {
@@ -7486,7 +7554,8 @@ function findIVComponents() {
   for (const item of state.items) {
     if (item === rheostat) continue; // Skip the sweep component itself
     if (item.type === 'wire' || item.type === 'voltmeter' || item.type === 'switch' ||
-    item.type === 'ammeter' || item.type === 'rheostat' || item.type === 'battery') continue;
+    item.type === 'ammeter' || item.type === 'rheostat' || item.type === 'battery' ||
+    item.type === 'potprobe') continue;
 
     // Get this component's nodes
     let itemNode1 = null,itemNode2 = null;
@@ -8202,6 +8271,7 @@ function findVIComponents() {
     }
     for (const item of state.items) {
       if (item.type === 'voltmeter') continue;
+      if (item.type === 'potprobe') continue;
       if (ptSegDist(px, py, item.x1, item.y1, item.x2, item.y2) < PROBE_DIST) {
         if (item.type === 'wire' || item.type === 'ammeter' || item.type === 'switch' && item.isOn || item.type === 'fuse' && !item.fuseBlown) {
           for (let i = 0; i < endpoints.length; i++) {
@@ -9001,7 +9071,7 @@ function drawPower() {
 
   for (const item of state.items) {
     const t = item.type;
-    if (t === 'wire' || t === 'voltmeter' || t === 'ammeter') continue;
+    if (t === 'wire' || t === 'voltmeter' || t === 'ammeter' || t === 'potprobe') continue;
     if (t === 'switch' || t === 'fuse') continue;
 
     let power,isBattery = false,isCharging = false;
@@ -9184,7 +9254,7 @@ function buildKVLNodeMap() {
 
   for (let i = 0; i < endpoints.length; i++) {
     if (endpoints[i].endNum > 2) {epToDot.push(-1);continue;}
-    if (endpoints[i].item.type === 'voltmeter') {epToDot.push(-1);continue;}
+    if (endpoints[i].item.type === 'voltmeter' || endpoints[i].item.type === 'potprobe') {epToDot.push(-1);continue;}
 
     const ex = endpoints[i].x,ey = endpoints[i].y;
     let dotIdx = -1;
@@ -9208,7 +9278,7 @@ function buildKVLNodeMap() {
   const seen = new Set();
   for (let i = 0; i < endpoints.length; i++) {
     const item = endpoints[i].item;
-    if (seen.has(item) || item.type === 'voltmeter') continue;
+    if (seen.has(item) || item.type === 'voltmeter' || item.type === 'potprobe') continue;
     if (endpoints[i].endNum > 2) continue;
     seen.add(item);
 
@@ -10175,6 +10245,7 @@ function drawBranchCurrentArrows() {
   const endpoints = [];
   for (const item of state.items) {
     if (item.type === 'voltmeter') continue;
+    if (item.type === 'potprobe') continue;
     endpoints.push({ x: item.x1, y: item.y1, item, endNum: 1 });
     endpoints.push({ x: item.x2, y: item.y2, item, endNum: 2 });
     // Include rheostat's third terminal
@@ -10220,6 +10291,7 @@ function drawBranchCurrentArrows() {
   const itemToNodes = new Map();
   for (const item of state.items) {
     if (item.type === 'voltmeter') continue;
+    if (item.type === 'potprobe') continue;
     let node1 = null,node2 = null,node3 = null;
     for (let i = 0; i < endpoints.length; i++) {
       if (endpoints[i].item === item) {
@@ -10243,6 +10315,7 @@ function drawBranchCurrentArrows() {
 
   for (const item of state.items) {
     if (item.type === 'voltmeter') continue;
+    if (item.type === 'potprobe') continue;
     if (visited.has(item)) continue;
 
     // Start a new branch from this item
@@ -10266,7 +10339,7 @@ function drawBranchCurrentArrows() {
         // Find other items connected to this node
         for (const [otherItem, otherNodes] of itemToNodes) {
           if (otherItem === curr || visited.has(otherItem)) continue;
-          if (otherItem.type === 'voltmeter') continue;
+          if (otherItem.type === 'voltmeter' || otherItem.type === 'potprobe') continue;
           // Check all nodes of the other item
           const checkNodes = otherItem.type === 'rheostat' ? [otherNodes[0], otherNodes[1], otherNodes[2]] : [otherNodes[0], otherNodes[1]];
           if (checkNodes.includes(node)) {
@@ -12429,6 +12502,10 @@ function drawPotProbe(item) {
   }
 }
 
+// Animation loop for heat source flames and light sources
+let lastThermistorUpdate = 0;
+let lastLDRUpdate = 0;
+
 function animate() {
   state.animationTime += 0.016; // Roughly 60fps
   updateParticles();
@@ -12772,5 +12849,169 @@ const DoodlePad = (function () {
 
 </script>
 
+
+<!-- ===== CIRCUIT ANNOTATE (ported from capacitor toolkit) ===== -->
+<script>
+const CircuitAnnotate = (function () {
+    let canvas, ctx, stage, toggleBtn, tools;
+    let on = false;
+    let color = '#ffffff';
+    let thickness = 2;
+    const ERASER_WIDTH = 22;
+    let eraser = false;
+    let strokes = [];            // persists until the user clears
+    let current = null;
+    let drawing = false;
+    let activePointerId = null;  // the single pointer we draw with (palm rejection)
+
+    function el(id) { return document.getElementById(id); }
+
+    function init() {
+        canvas = el('circuitAnnotateCanvas');
+        stage = el('circuitStage');
+        toggleBtn = el('caToggle');
+        tools = el('caToolsExpanded');
+        if (!canvas || !stage) return;
+        ctx = canvas.getContext('2d');
+
+        const swatches = tools.querySelectorAll('.doodle-swatch');
+        swatches.forEach(function (s) {
+            s.addEventListener('click', function () {
+                color = s.getAttribute('data-cacolor');
+                eraser = false;
+                el('caEraser').classList.remove('active');
+                setActiveSwatch();
+            });
+        });
+        el('caEraser').addEventListener('click', function () {
+            eraser = !eraser;
+            el('caEraser').classList.toggle('active', eraser);
+            setActiveSwatch();
+        });
+        el('caThickness').addEventListener('input', function (e) {
+            thickness = parseFloat(e.target.value);
+        });
+        el('caClear').addEventListener('click', function () {
+            strokes = [];
+            repaint();
+        });
+        setActiveSwatch();
+        initDrawing();
+    }
+
+    function setActiveSwatch() {
+        const swatches = tools.querySelectorAll('.doodle-swatch');
+        swatches.forEach(function (s) {
+            s.classList.toggle('active', !eraser && s.getAttribute('data-cacolor') === color);
+        });
+    }
+
+    function toggle() {
+        on = !on;
+        toggleBtn.classList.toggle('active', on);
+        tools.style.display = on ? 'flex' : 'none';
+        canvas.classList.toggle('active', on);
+        stage.classList.toggle('annotating', on);
+    }
+
+    function isOn() { return on; }
+
+    /* Map client coords into the 640x480 buffer, exactly like the circuit's
+       canvasPos() so annotations register where the circuit is drawn. */
+    function bufPos(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: (clientX - rect.left) * (canvas.width / rect.width),
+            y: (clientY - rect.top) * (canvas.height / rect.height)
+        };
+    }
+
+    function repaint() {
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);   // transparent overlay
+        for (let i = 0; i < strokes.length; i++) drawStroke(strokes[i]);
+        if (current) drawStroke(current);
+    }
+
+    function drawStroke(s) {
+        if (!s.pts.length) return;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = s.width;
+        if (s.erase) {
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.strokeStyle = 'rgba(0,0,0,1)';
+        } else {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.strokeStyle = s.color;
+        }
+        ctx.beginPath();
+        ctx.moveTo(s.pts[0].x, s.pts[0].y);
+        if (s.pts.length === 1) {
+            ctx.lineTo(s.pts[0].x + 0.01, s.pts[0].y + 0.01);
+        } else {
+            for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i].x, s.pts[i].y);
+        }
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
+    function initDrawing() {
+        // Match GraphAnnotate exactly: pointer events with a single active
+        // pointer id, rejecting extra touches (palm) while one is down, and
+        // ignoring touch input when it isn't the active pointer. This is what
+        // stops a resting palm/finger from spraying strokes.
+        canvas.addEventListener('selectstart', function (e) { if (on) e.preventDefault(); });
+        canvas.addEventListener('contextmenu', function (e) { if (on) e.preventDefault(); });
+        canvas.addEventListener('touchstart', function (e) { if (on) e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchmove', function (e) { if (on) e.preventDefault(); }, { passive: false });
+
+        canvas.addEventListener('pointerdown', function (e) {
+            if (!on) return;
+            // Reject additional touches while a stroke is already in progress
+            // (a resting palm arrives as a second touch pointer).
+            if (e.pointerType === 'touch' && activePointerId !== null) return;
+            activePointerId = e.pointerId;
+            drawing = true;
+            const p = bufPos(e.clientX, e.clientY);
+            current = { color: color, width: eraser ? ERASER_WIDTH : thickness, erase: eraser, pts: [p] };
+            try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+            e.preventDefault();
+        }, { passive: false });
+
+        canvas.addEventListener('pointermove', function (e) {
+            if (!drawing || e.pointerId !== activePointerId) return;
+            let evs = [e];
+            if (e.getCoalescedEvents) {
+                const c = e.getCoalescedEvents();
+                if (c && c.length) evs = c;
+            }
+            for (let i = 0; i < evs.length; i++) current.pts.push(bufPos(evs[i].clientX, evs[i].clientY));
+            repaint();
+            e.preventDefault();
+        }, { passive: false });
+
+        function endStroke(e) {
+            if (e.pointerId !== activePointerId) return;
+            if (current && current.pts.length) strokes.push(current);
+            current = null;
+            drawing = false;
+            activePointerId = null;
+            try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+        }
+        canvas.addEventListener('pointerup', endStroke, { passive: false });
+        canvas.addEventListener('pointercancel', endStroke, { passive: false });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+    return { toggle: toggle, isOn: isOn, repaint: repaint };
+})();
+
+</script>
 </body>
 </html>
