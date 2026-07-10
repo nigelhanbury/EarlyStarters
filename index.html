@@ -1103,13 +1103,13 @@ canvas {
                         </svg>
                         <span class="component-label">Ammeter</span>
                     </div>
-                    <div class="drag-component probe" id="probeBtn" onclick="toggleProbeMode()">
+                    <div class="drag-component probe" data-type="potprobe">
                         <svg class="component-icon" viewBox="0 0 50 30">
                             <line x1="25" y1="5" x2="25" y2="25" stroke="#ff6b9d" stroke-width="2"/>
                             <line x1="15" y1="15" x2="35" y2="15" stroke="#ff6b9d" stroke-width="2"/>
                             <circle cx="25" cy="15" r="4" fill="#ff6b9d"/>
                         </svg>
-                        <span class="component-label">Probe</span>
+                        <span class="component-label">Potential Probe</span>
                     </div>
                     <div class="drag-component textLabel" onclick="addTextLabel()">
                         <svg class="component-icon" viewBox="0 0 50 30">
@@ -1554,7 +1554,8 @@ const componentDefs = {
   switch: { length: 80, color: '#9b59b6', defaultValue: 1, unit: '' },
   fuse: { length: 80, color: '#aab8c2', defaultValue: 500, unit: 'mA' },
   ammeter: { length: 80, color: '#e74c3c', defaultValue: 0, unit: 'A' },
-  voltmeter: { length: 160, color: '#ff6b9d', defaultValue: 0, unit: 'V' }
+  voltmeter: { length: 160, color: '#ff6b9d', defaultValue: 0, unit: 'V' },
+  potprobe: { length: 0, color: '#ff6b9d', defaultValue: 0, unit: 'V' }
 };
 
 // Event listeners
@@ -2507,6 +2508,31 @@ function snapToGrid(val) {
 
 function addItem(type, x, y) {
   const def = componentDefs[type];
+
+  // Placed potential probe: a single-tip instrument (like the cap toolkit's).
+  // The tip (x1,y1) reads the potential at that point on the circuit; the
+  // reading bubble floats above at bodyX/bodyY. Its own shape so none of the
+  // two-terminal component logic applies to it.
+  if (type === 'potprobe') {
+    const px = state.snapToGrid ? snapToGrid(x) : x;
+    const py = state.snapToGrid ? snapToGrid(y) : y;
+    const probe = {
+      id: Date.now() + Math.random(),
+      type: 'potprobe',
+      x1: px, y1: py,          // probe tip (the point that is read)
+      angle1: 0,               // handle angle (0 = straight up), adjustable
+      bodyX: px + 40, bodyY: py - 90, // reading meter body position (draggable)
+      color: '#ff6b9d', unit: def.unit,
+      potential: null,         // last read value
+      _readItem: null
+    };
+    state.items.push(probe);
+    state.selectedItem = probe;
+    updateSelectedInfo();
+    simulateCircuit();
+    return;
+  }
+
   const halfLen = def.length / 2;
   const sx = state.snapToGrid ? snapToGrid(x) : x;
   const sy = state.snapToGrid ? snapToGrid(y) : y;
@@ -2535,6 +2561,10 @@ function addItem(type, x, y) {
     bodyX: sx,
     bodyY: sy - 40,
     bodyAngle: 0,
+    // Adjustable probe handle angles (default matches the old hardcoded tilt so
+    // existing behaviour is preserved; now draggable via rotate handles).
+    angle1: -0.15,
+    angle2: 0.15,
     // Variable resistor / rheostat wiper position (0-1, 0.5 = middle)
     wiper: (type === 'varResistor' || type === 'rheostat') ? 0.5 : undefined,
     maxR: type === 'varResistor' ? def.defaultValue : type === 'rheostat' ? def.defaultValue : undefined,
@@ -2574,6 +2604,17 @@ function addItem(type, x, y) {
 }
 
 function getItemAt(x, y) {
+  // PRIORITY PASS: instruments (voltmeter, placed potential probe) are the top
+  // visual layer, so they must be the top grab layer too - this lets a probe or
+  // meter that overlaps the component it measures still be picked up instead of
+  // selecting the component beneath it. If the tap is not on an instrument we
+  // fall through to the normal topmost-first scan.
+  for (let i = state.items.length - 1; i >= 0; i--) {
+    const item = state.items[i];
+    if (item.type !== 'voltmeter' && item.type !== 'potprobe') continue;
+    const hit = getHitPart(item, x, y);
+    if (hit) return { item, part: hit };
+  }
   // Check in reverse (top first)
   for (let i = state.items.length - 1; i >= 0; i--) {
     const item = state.items[i];
@@ -2592,26 +2633,22 @@ function getHitPart(item, x, y) {
     const bodyWidth = 50;
     const bodyHeight = 60;
     const handleHeight = 50;
+    const a1 = (item.angle1 != null) ? item.angle1 : -0.15;
+    const a2 = (item.angle2 != null) ? item.angle2 : 0.15;
 
-    // Check probe handles (extend UPWARD from tip position, slightly angled)
-    // Use a circular hit area around the probe handle for easier selection
-    const probeHitRadius = 25;
+    // Probe tips first (within 15px = move/reconnect that probe).
+    if (Math.hypot(x - item.x1, y - item.y1) < 15) return 'start';
+    if (Math.hypot(x - item.x2, y - item.y2) < 15) return 'end';
 
-    // Probe 1 (+ red) - center of handle is above tip
-    const probe1CenterX = item.x1 - Math.sin(-0.15) * handleHeight / 2;
-    const probe1CenterY = item.y1 - Math.cos(-0.15) * handleHeight / 2;
-    if (Math.hypot(x - probe1CenterX, y - probe1CenterY) < probeHitRadius ||
-    Math.hypot(x - item.x1, y - item.y1) < 15) {
-      return 'start';
-    }
-
-    // Probe 2 (- black) - center of handle is above tip
-    const probe2CenterX = item.x2 - Math.sin(0.15) * handleHeight / 2;
-    const probe2CenterY = item.y2 - Math.cos(0.15) * handleHeight / 2;
-    if (Math.hypot(x - probe2CenterX, y - probe2CenterY) < probeHitRadius ||
-    Math.hypot(x - item.x2, y - item.y2) < 15) {
-      return 'end';
-    }
+    // Probe handles (the shaft above the tip) = ROTATE that probe. Check the
+    // handle top and mid points along the current angle, matching cap toolkit.
+    const rotHitRadius = 20;
+    const h1topX = item.x1 + Math.sin(a1) * handleHeight, h1topY = item.y1 - Math.cos(a1) * handleHeight;
+    const h1midX = item.x1 + Math.sin(a1) * handleHeight * 0.5, h1midY = item.y1 - Math.cos(a1) * handleHeight * 0.5;
+    if (Math.hypot(x - h1topX, y - h1topY) < rotHitRadius || Math.hypot(x - h1midX, y - h1midY) < 18) return 'rot1';
+    const h2topX = item.x2 + Math.sin(a2) * handleHeight, h2topY = item.y2 - Math.cos(a2) * handleHeight;
+    const h2midX = item.x2 + Math.sin(a2) * handleHeight * 0.5, h2midY = item.y2 - Math.cos(a2) * handleHeight * 0.5;
+    if (Math.hypot(x - h2topX, y - h2topY) < rotHitRadius || Math.hypot(x - h2midX, y - h2midY) < 18) return 'rot2';
 
     // Check if clicking on meter body (rectangular area)
     if (x >= item.bodyX - bodyWidth / 2 - 10 && x <= item.bodyX + bodyWidth / 2 + 10 &&
@@ -2622,7 +2659,22 @@ function getHitPart(item, x, y) {
     return null;
   }
 
-  // Check label first (labels always show - either values or symbolic)
+  // Placed potential probe: tip (move), handle (rotate), reading bubble (move).
+  if (item.type === 'potprobe') {
+    const handleHeight = 50;
+    const a1 = (item.angle1 != null) ? item.angle1 : 0;
+    // Tip first (move/reconnect the reading point)
+    if (Math.hypot(x - item.x1, y - item.y1) < 15) return 'start';
+    // Handle shaft = rotate
+    const hTopX = item.x1 + Math.sin(a1) * handleHeight, hTopY = item.y1 - Math.cos(a1) * handleHeight;
+    const hMidX = item.x1 + Math.sin(a1) * handleHeight * 0.5, hMidY = item.y1 - Math.cos(a1) * handleHeight * 0.5;
+    if (Math.hypot(x - hTopX, y - hTopY) < 20 || Math.hypot(x - hMidX, y - hMidY) < 18) return 'rot1';
+    // Reading bubble body (matches the 56x64 body + casing in drawPotProbe)
+    const bw = 56, bh = 64;
+    if (x >= item.bodyX - bw / 2 - 8 && x <= item.bodyX + bw / 2 + 8 &&
+        y >= item.bodyY - bh / 2 - 8 && y <= item.bodyY + bh / 2 + 12) return 'body';
+    return null;
+  }
   if (item.type !== 'wire') {
     // For thermistor, check both temp and resistance labels
     if (item.type === 'thermistor') {
@@ -3055,8 +3107,8 @@ function onMouseDown(e) {
     state.draggingPart = hit.part;
 
     if (hit.part === 'body') {
-      if (hit.item.type === 'voltmeter') {
-        // For voltmeter, offset is relative to body position
+      if (hit.item.type === 'voltmeter' || hit.item.type === 'potprobe') {
+        // For voltmeter/probe, offset is relative to the floating body position
         state.dragOffset = {
           dx: hit.item.bodyX - pos.x,
           dy: hit.item.bodyY - pos.y
@@ -3300,6 +3352,22 @@ function onMouseMove(e) {
       return;
     }
 
+    // Placed potential probe drag: tip (move read point), rotate, or bubble.
+    if (item.type === 'potprobe') {
+      if (state.draggingPart === 'start') {
+        item.x1 = pos.x; item.y1 = pos.y;
+      } else if (state.draggingPart === 'rot1') {
+        item.angle1 = Math.atan2(pos.x - item.x1, -(pos.y - item.y1));
+      } else if (state.draggingPart === 'body') {
+        item.bodyX = pos.x + state.dragOffset.dx;
+        item.bodyY = pos.y + state.dragOffset.dy;
+      }
+      // No snap targets for a probe tip; it reads wherever it is placed.
+      state.snapTargets = [];
+      simulateCircuit();
+      return;
+    }
+
     // Special handling for voltmeter
     if (item.type === 'voltmeter') {
       if (state.draggingPart === 'start') {
@@ -3310,6 +3378,12 @@ function onMouseMove(e) {
         // Move - probe only, meter stays fixed
         item.x2 = pos.x;
         item.y2 = pos.y;
+      } else if (state.draggingPart === 'rot1') {
+        // Rotate the red probe: angle from tip up toward the cursor. The handle
+        // is drawn using (sin a, -cos a), so a=atan2(dx, -dy) points it at cursor.
+        item.angle1 = Math.atan2(pos.x - item.x1, -(pos.y - item.y1));
+      } else if (state.draggingPart === 'rot2') {
+        item.angle2 = Math.atan2(pos.x - item.x2, -(pos.y - item.y2));
       } else if (state.draggingPart === 'body') {
         // Move the meter body only, probes stay fixed
         item.bodyX = pos.x + state.dragOffset.dx;
@@ -3575,6 +3649,10 @@ function onMouseUp(e) {
   if (state.draggingItem) {
     const item = state.draggingItem;
 
+    // Potential probe: no snapping - the tip reads wherever it is left.
+    if (item.type === 'potprobe') {
+      // nothing to snap; fall through to the shared cleanup below
+    } else
     // Handle voltmeter specially - probes can snap to anywhere on wires
     if (item.type === 'voltmeter') {
       if (state.draggingPart === 'start') {
@@ -4202,6 +4280,7 @@ function getPotentialAtPoint(px, py) {
   // Check each circuit item
   for (const item of state.items) {
     if (item.type === 'voltmeter') continue;
+    if (item.type === 'potprobe') continue;
 
     // Special handling for rheostat
     if (item.type === 'rheostat') {
@@ -9440,8 +9519,18 @@ function draw() {
   // Draw light sparkle particles
   drawLightParticles();
 
+  // Layered draw so instruments never get buried by components dropped later.
+  // Base components first (their own drop order preserved), then instruments
+  // (voltmeter and placed potential probe) on top. The items array itself is
+  // untouched, so solve/hit/config are unaffected; only paint order changes.
+  // Grab priority in getItemAt is made to match (instruments first).
+  const isInstrument = (t) => t === 'voltmeter' || t === 'potprobe';
   for (const item of state.items) {
+    if (isInstrument(item.type)) continue;
     drawItem(item);
+  }
+  for (const item of state.items) {
+    if (isInstrument(item.type)) drawItem(item);
   }
 
   // Draw current arrows per branch (one arrow per continuous current path)
@@ -9791,6 +9880,13 @@ function drawGrid() {
 }
 
 function drawItem(item) {
+  // Placed potential probe has a single tip and its own drawing; handle it up
+  // front so the two-terminal midpoint/label code below never applies to it.
+  if (item.type === 'potprobe') {
+    drawPotProbe(item);
+    return;
+  }
+
   const isSelected = item === state.selectedItem;
   const midX = (item.x1 + item.x2) / 2;
   const midY = (item.y1 + item.y2) / 2;
@@ -11964,10 +12060,10 @@ function drawVoltmeter(item, midX, midY, len, angle) {
   const rightConnX = bodyX + 12;
   const rightConnY = bodyY + bodyHeight / 2 + 5;
 
-  // Probe handle dimensions and angles
+  // Probe handle dimensions and angles (per-item, adjustable via rotate handles)
   const probeHandleHeight = 50;
-  const probeAngle1 = -0.15; // Red probe tilts slightly left
-  const probeAngle2 = 0.15; // Black probe tilts slightly right
+  const probeAngle1 = (item.angle1 != null) ? item.angle1 : -0.15; // Red probe
+  const probeAngle2 = (item.angle2 != null) ? item.angle2 : 0.15; // Black probe
 
   // Calculate TOP of probe handles (where cables come out)
   // The handle extends upward from the tip, so top is at tip - handleHeight in the rotated direction
@@ -12058,9 +12154,9 @@ function drawVoltmeter(item, midX, midY, len, angle) {
   ctx.fill();
   ctx.stroke();
 
-  // Draw probe handles - red left (angled left), black right (angled right)
-  drawProbeHandle(item.x1, item.y1, '#cc4422', '#ff6644', '+', -0.15);
-  drawProbeHandle(item.x2, item.y2, '#222', '#444', '−', 0.15);
+  // Draw probe handles - red left (+), black right (-), at their adjustable angles
+  drawProbeHandle(item.x1, item.y1, '#cc4422', '#ff6644', '+', probeAngle1);
+  drawProbeHandle(item.x2, item.y2, '#222', '#444', '−', probeAngle2);
 }
 
 function drawCableLead(probeX, probeY, meterX, meterY, darkColor, midColor, lightColor, isRed) {
@@ -12186,9 +12282,69 @@ function drawProbeHandle(tipX, tipY, darkColor, lightColor, symbol, angle) {
   ctx.restore();
 }
 
-// Animation loop for heat source flames and light sources
-let lastThermistorUpdate = 0;
-let lastLDRUpdate = 0;
+// Placed potential probe: matches the capacitor toolkit's potential probe -
+// a tall pink-faced meter body ("Potential" / status / white readout box) with
+// a single probe hanging below on a pink cable, tip reads via getPotentialAtPoint.
+function drawPotProbe(item) {
+  const isSelected = item === state.selectedItem;
+  const a1 = (item.angle1 != null) ? item.angle1 : 0;
+  const bodyX = item.bodyX, bodyY = item.bodyY;
+  const bodyWidth = 56, bodyHeight = 64;
+  const connX = bodyX, connY = bodyY + bodyHeight / 2 + 5;
+  const probeHandleHeight = 50;
+
+  // Read the potential at the tip.
+  const r = getPotentialAtPoint(item.x1, item.y1);
+  const reading = (r && r.potential != null) ? r.potential : null;
+  item.potential = reading;
+  item._readItem = r ? r.item : null;
+
+  // Cable from the probe handle top up to the body connection.
+  const p1TopX = item.x1 + Math.sin(a1) * probeHandleHeight;
+  const p1TopY = item.y1 - Math.cos(a1) * probeHandleHeight;
+  drawCableLead(p1TopX, p1TopY, connX, connY, '#7a1436', '#c0286a', '#ff6b9d', false);
+
+  ctx.save();
+  if (isSelected) { ctx.shadowColor = '#ff6b9d'; ctx.shadowBlur = 15; }
+  // Outer black casing
+  ctx.fillStyle = '#1a1a1a'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(bodyX - bodyWidth / 2 - 5, bodyY - bodyHeight / 2 - 5, bodyWidth + 10, bodyHeight + 15, 12);
+  ctx.fill(); ctx.stroke();
+  // Pink face
+  const fg = ctx.createLinearGradient(bodyX, bodyY - bodyHeight / 2, bodyX, bodyY + bodyHeight / 2);
+  fg.addColorStop(0, '#ff8fb6'); fg.addColorStop(0.5, '#ff6b9d'); fg.addColorStop(1, '#e04b80');
+  ctx.fillStyle = fg;
+  ctx.beginPath();
+  ctx.roundRect(bodyX - bodyWidth / 2, bodyY - bodyHeight / 2, bodyWidth, bodyHeight, 8);
+  ctx.fill();
+  // Labels
+  ctx.fillStyle = '#3a0c20'; ctx.font = 'bold 11px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Potential', bodyX, bodyY - 20);
+  ctx.font = 'bold 9px Arial';
+  ctx.fillText((reading != null) ? 'at point' : '--', bodyX, bodyY - 8);
+  // White readout box
+  ctx.fillStyle = '#f8f8f8'; ctx.strokeStyle = '#999'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(bodyX - 26, bodyY + 2, 52, 20, 3); ctx.fill(); ctx.stroke();
+  const disp = (reading == null) ? '--' : (reading.toFixed(2) + ' V');
+  ctx.fillStyle = '#111'; ctx.font = 'bold 12px monospace';
+  ctx.fillText(disp, bodyX, bodyY + 12);
+  ctx.restore();
+
+  // Connection dot at the bottom of the body.
+  ctx.fillStyle = '#ff6b9d'; ctx.strokeStyle = '#7a1436'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(connX, connY, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+  // Probe handle (pink) at the tip.
+  drawProbeHandle(item.x1, item.y1, '#a01450', '#ff6b9d', 'V', a1);
+
+  // Tip selection ring.
+  if (isSelected) {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(item.x1, item.y1, 10, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
 function animate() {
   state.animationTime += 0.016; // Roughly 60fps
   updateParticles();
