@@ -1139,7 +1139,7 @@ canvas {
                         </svg>
                         <span class="component-label">Thermistor</span>
                     </div>
-                    <div class="drag-component heatSource" onclick="addHeatSource()">
+                    <div class="drag-component heatSource" data-type="heatSource">
                         <svg class="component-icon" viewBox="0 0 50 30">
                             <ellipse cx="25" cy="26" rx="12" ry="4" fill="#8B4513"/>
                             <path d="M25 24 Q20 18 22 12 Q24 6 25 2 Q26 6 28 12 Q30 18 25 24" fill="#ff6600"/>
@@ -1165,7 +1165,7 @@ canvas {
                         </svg>
                         <span class="component-label">LDR</span>
                     </div>
-                    <div class="drag-component lightSource" onclick="addLightSource()">
+                    <div class="drag-component lightSource" data-type="lightSource">
                         <svg class="component-icon" viewBox="0 0 50 30">
                             <circle cx="25" cy="15" r="8" fill="#fff9c4"/>
                             <circle cx="25" cy="15" r="5" fill="#ffeb3b"/>
@@ -2655,6 +2655,14 @@ function snapToGrid(val) {
 }
 
 function addItem(type, x, y) {
+  // Heat and light sources live in their own arrays (state.heatSources /
+  // state.lightSources), not state.items, but they place through the same
+  // palette flow as every other component: drag-drop on desktop, or select
+  // then tap the canvas on iPad. Route them here so all three placement
+  // paths land the source exactly where the user dropped or tapped.
+  if (type === 'heatSource') { addHeatSource(x, y); return; }
+  if (type === 'lightSource') { addLightSource(x, y); return; }
+
   const def = componentDefs[type];
 
   // Placed potential probe: a single-tip instrument (like the cap toolkit's).
@@ -4670,12 +4678,12 @@ function clearCanvas() {
 // Heat source functions
 let heatSourceIdCounter = 1;
 
-function addHeatSource() {
+function addHeatSource(x, y) {
   const id = heatSourceIdCounter++;
   state.heatSources.push({
     id: id,
-    x: 450 + Math.random() * 100,
-    y: 300 + Math.random() * 100,
+    x: (x != null) ? x : 450 + Math.random() * 100,
+    y: (y != null) ? y : 300 + Math.random() * 100,
     intensity: 0.8 // 0-1 scale
   });
   simulateCircuit();
@@ -4723,12 +4731,12 @@ function getThermistorResistance(item) {
 // Light source functions
 let lightSourceIdCounter = 1;
 
-function addLightSource() {
+function addLightSource(x, y) {
   const id = lightSourceIdCounter++;
   state.lightSources.push({
     id: id,
-    x: 550 + Math.random() * 100,
-    y: 300 + Math.random() * 100,
+    x: (x != null) ? x : 550 + Math.random() * 100,
+    y: (y != null) ? y : 300 + Math.random() * 100,
     intensity: 0.9 // 0-1 scale
   });
   simulateCircuit();
